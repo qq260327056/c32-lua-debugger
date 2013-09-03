@@ -45,10 +45,25 @@ do
 			io.write(debug.traceback("",stackoffset):sub(2),"\n")
 		end,
 	}
-	
 	commands["trace"] = commands["bt"]
 	commands["backtrace"] = commands["bt"]
 	commands["traceback"] = commands["bt"]
+	
+	commands["locals"] = {
+		shortdesc = "Prints local vars",
+		longdesc = "Prints out all local variables in a function. Optionally takes a stack offset.",
+		func = function(argstr, stackoffset)
+			stackoffset = stackoffset + (tonumber(argstr) or 1) - 1
+			local i = 1
+			while true do
+				local name, val = debug.getlocal(stackoffset, i)
+				if not name then break end
+				io.write(name, string.rep(" ", math.max(20-#name, 1)), "= ", tostring(val), "\n")
+				i = i + 1
+			end
+		end,
+	}
+	commands["vars"] = commands["locals"]
 	
 	commands["help"] = {
 		shortdesc = "Prints help",
