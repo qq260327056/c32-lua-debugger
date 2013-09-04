@@ -36,7 +36,38 @@ end
 
 local Debugger = {}
 
+--- Counts the size of the stack, in number of functions called (not including
+-- this function call)
+local function countStack()
+	local i = 2
+	while debug.getinfo(i, 'u') do
+		i = i + 1
+	end
+	return i-2
+end
+
 local commands = {}
+
+local function debugger_loop(stackoffset, message)
+	stackoffset = stackoffset or 3
+	while true do
+		-- Get and print the line of code we are on
+		local info = debug.getinfo(stackoffset, "nSlu")
+		assert(info, "Invalid stackoffset passed to debugger_loop")
+		io.write(info.short_src, ":", info.currentline, "> ")
+		local cmdstr = io.read("*l")
+		local cmd, args = cmdstr:match("^([^%s]+)%s*(.-)$")
+		
+		if not cmd then
+			io.write("Bad command\n")
+		elseif not commands[cmd] then
+			io.write("Unknown command\n")
+		elseif commands[cmd].func(args, stackoffset+1) then
+			break
+		end
+	end
+end
+
 do
 	commands["bt"] = {
 		shortdesc = "Prints a stack trace",
@@ -65,6 +96,24 @@ do
 	}
 	commands["vars"] = commands["locals"]
 	
+	commands["next"] = {
+		shortdesc = "Resumes execution for one line, not going into function calls",
+		func = function(argstr, stackoffset)
+			-- If we get a line executed event and our stack count is equal or less than it was,
+			-- break. If it is greater, we are in a called function.
+			local stackcount = countStack() - stackoffset + 2
+			debug.sethook(function(event, linenum)
+				local thislevel = countStack()
+				if thislevel <= stackcount then
+					debug.sethook(nil)
+					debugger_loop()
+				end
+			end, "l")
+			return true
+		end
+	}
+	commands["n"] = commands["next"]
+
 	commands["help"] = {
 		shortdesc = "Prints help",
 		func = function(argstr, stackoffset)
@@ -87,30 +136,17 @@ do
 	}
 end
 
-local function debugger_loop(stackoffset)
-	stackoffset = stackoffset or 3
-	
-	io.write(">>> Entering debugger\n")
-	while true do
-		-- Get and print the line of code we are on
-		local info = debug.getinfo(stackoffset, "nSlu")
-		assert(info, "Invalid stackoffset passed to debugger_loop")
-		io.write(info.short_src, ":", info.currentline, "> ")
-		local cmdstr = io.read("*l")
-		local cmd, args = cmdstr:match("^([^%s]+)%s*(.-)$")
-		
-		if not cmd then
-			io.write("Bad command\n")
-		elseif not commands[cmd] then
-			io.write("Unknown command\n")
-		elseif commands[cmd].func(args, stackoffset+1) then
-			break
-		end
-	end
+--- Pauses the script and enters the debug shell, similar to hitting a breakpoint
+function Debugger.pause()
+	io.write(">>> Debugger.pause()\n")
+	debugger_loop()
 end
 
-function Debugger.pause()
-	debugger_loop()
+--- Sets up the debug hook so that it can catch breakpoints.
+-- You should call this as soon as you start the script.
+-- For LuaJIT users, luajit -jdebugger <script> should also work.
+function Debugger.start()
+
 end
 
 return Debugger
