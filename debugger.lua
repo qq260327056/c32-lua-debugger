@@ -292,7 +292,6 @@ end
 
 --- Sets up the debug hook so that it can catch breakpoints.
 -- You should call this as soon as you start the script.
--- For LuaJIT users, luajit -jdebugger <script> should also work.
 function Debugger.start()
 	debug.sethook(breakpoints_hook, "l")
 end
