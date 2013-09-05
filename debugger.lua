@@ -31,14 +31,26 @@
 local jit
 do
 	local hasjit, ajit = pcall(require, "jit")
-	if hasjit then jit = ajit end
+	if hasjit then
+		jit = ajit
+		jit.off()
+	end
 end
 
+-- Forward declare some tables and functions.
 local Debugger = {}
+local commands = {}
+local breakpoints = {}
+
+local debugger_loop
+local breakpoints_hook
+
+-- ------------------------------------------------------------------------------------------
+-- Helper functions
 
 --- Counts the size of the stack, in number of functions called (not including
 -- this function call)
-local function countStack()
+local function count_stack()
 	local i = 2
 	while debug.getinfo(i, 'u') do
 		i = i + 1
@@ -46,10 +58,43 @@ local function countStack()
 	return i-2
 end
 
-local commands = {}
+--- Transforms a path name into a less-ambiguous format.
+-- IE: stripping the '@./' prefix
+local function transform_filename(line)
+	if line:sub(1,1) == "@" then
+		line = line:sub(2)
+	end
+	
+	line = line:gsub("\\", "/")
+	if line:sub(1,2) == "./" then
+		line = line:sub(3)
+	end
+	
+	return line
+end
+
+--- Checks if a currently executing line has a breakpoint on it.
+local function check_breakpoints(stackoffset)
+	stackoffset = stackoffset or 2
+	local info = debug.getinfo(stackoffset+1, "Sl")
+	assert(info, "Invalid stackoffset passed to stackoffset")
+	local source, curline = transform_filename(info.source), info.currentline
+	if breakpoints[source] and breakpoints[source][curline] then
+		debug.sethook(breakpoints_hook, "l")
+		io.write(">>> Breakpoint hit\n")
+		debugger_loop(4)
+		return true
+	end
+	return false
+end
+
+--- Debug hook that only scans for breakpoints
+breakpoints_hook = function(event, linenum)
+	check_breakpoints()
+end
 
 --- The debugger shell. Must be ran in a debug hook
-local function debugger_loop(stackoffset, inhook)
+debugger_loop = function(stackoffset, inhook)
 	stackoffset = stackoffset or 3
 	while true do
 		-- Get and print the line of code we are on
@@ -57,6 +102,7 @@ local function debugger_loop(stackoffset, inhook)
 		assert(info, "Invalid stackoffset passed to debugger_loop")
 		io.write(info.short_src, ":", info.currentline, "> ")
 		local cmdstr = io.read("*l")
+		assert(cmdstr, "Got nil from io.read, probably got ^C")
 		local cmd, args = cmdstr:match("^([^%s]+)%s*(.-)$")
 		
 		if not cmd then
@@ -69,7 +115,13 @@ local function debugger_loop(stackoffset, inhook)
 	end
 end
 
+-- ------------------------------------------------------------------------------------------
+-- Commands
+
 do
+	-- ------------------------------------------------------------------------------------------
+	-- Inspection
+	
 	commands["bt"] = {
 		shortdesc = "Prints a stack trace",
 		longdesc  = "Runs debug.traceback on the debugged code.",
@@ -97,17 +149,22 @@ do
 	}
 	commands["vars"] = commands["locals"]
 	
+	-- ------------------------------------------------------------------------------------------
+	-- Traversal
+	
 	commands["next"] = {
 		shortdesc = "Resumes execution for one line, not going into function calls",
 		func = function(argstr, stackoffset)
 			-- Get the stack position that the debugged line is in
-			local stackcount = countStack() - stackoffset + 2
+			local stackcount = count_stack() - stackoffset + 2
 			debug.sethook(function(event, linenum)
+				if check_breakpoints() then return end
+				
 				-- If we get a line event where the stack size is <= the stack size of the
 				-- debugged line, then we are in the same function (or the function returned).
 				-- Larger stack size means we are in an internal function, or the debugger function.
-				if countStack() <= stackcount then
-					debug.sethook(nil)
+				if count_stack() <= stackcount then
+					debug.sethook(breakpoints_hook, "l")
 					debugger_loop()
 				end
 			end, "l")
@@ -120,13 +177,69 @@ do
 		shortdesc = "Resumes execution for one line, going into function calls",
 		func = function(argstr, stackoffset, inhook)
 			debug.sethook(function(event, linenum)
-				debug.sethook(nil)
+				if check_breakpoints() then return end
+				
+				debug.sethook(breakpoints_hook, "l")
 				debugger_loop()
 			end, "l")
 			return true
 		end
 	}
 	commands["s"] = commands["step"]
+	
+	-- ------------------------------------------------------------------------------------------
+	-- Breakpoints
+	
+	commands["break"] = {
+		shortdesc = "Sets a breakpoint",
+		longdesc  = [[Usage: b(reak) <file>:<line>
+Sets a breakpoint.
+The line number must be an active line (a line with code on it) or else the breakpoint will never trigger.]],
+		func = function(argstr, stackoffset)
+			local file, line = argstr:match("^([^:]+):(%d+)$")
+			if not file then
+				io.write("Syntax: b(reak) <file>:<linenum>\n")
+				return
+			end
+			line = tonumber(line)
+			file = transform_filename(file)
+			
+			if not breakpoints[file] then
+				breakpoints[file] = {}
+			end
+			
+			breakpoints[file][line] = true
+			io.write("Breakpoint set on ", file, ":", tostring(line), "\n")
+		end
+	}
+	commands["b"] = commands["break"]
+	
+	commands["clear"] = {
+		shortdesc = "Clears a breakpoint",
+		longdesc  = [[Usage: cl(ear) <file>:<line>
+Clears a previous set breakpoint.]],
+		func = function(argstr, stackoffset)
+			local file, line = argstr:match("^([^:]+):(%d+)$")
+			if not file then
+				io.write("Syntax: cl(ear) <file>:<linenum>\n")
+				return
+			end
+			line = tonumber(line)
+			file = transform_filename(file)
+			
+			if not breakpoints[file] or not breakpoints[file][line] then
+				io.write("No breakpoint set on ", file, ":", tonumber(line), "\n")
+				return
+			end
+			
+			breakpoints[file][line] = nil
+			io.write("Breakpoint on ", file, ":", tonumber(line), " cleared\n")
+		end
+	}
+	commands["cl"] = commands["clear"]
+	
+	-- ------------------------------------------------------------------------------------------
+	-- Other commands
 	
 	commands["help"] = {
 		shortdesc = "Prints help",
@@ -158,6 +271,9 @@ do
 	}
 end
 
+-- ------------------------------------------------------------------------------------------
+-- Library functions
+
 --- Pauses the script on the NEXT line of active code, and enters the debug shell.
 function Debugger.pause()
 	-- Instead of starting the debugger shell now, set a one-shot hook that starts the debugger code on
@@ -167,7 +283,7 @@ function Debugger.pause()
 	debug.sethook(function()
 		-- Skip the first line event, which is the 'end' of this pause function.
 		debug.sethook(function()
-			debug.sethook(nil)
+			debug.sethook(breakpoints_hook, "l")
 			io.write(">>> Debugger.pause()\n")
 			debugger_loop()
 		end, "l")
@@ -178,7 +294,7 @@ end
 -- You should call this as soon as you start the script.
 -- For LuaJIT users, luajit -jdebugger <script> should also work.
 function Debugger.start()
-
+	debug.sethook(breakpoints_hook, "l")
 end
 
 return Debugger
