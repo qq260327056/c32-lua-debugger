@@ -48,7 +48,8 @@ end
 
 local commands = {}
 
-local function debugger_loop(stackoffset, message)
+--- The debugger shell. Must be ran in a debug hook
+local function debugger_loop(stackoffset, inhook)
 	stackoffset = stackoffset or 3
 	while true do
 		-- Get and print the line of code we are on
@@ -62,7 +63,7 @@ local function debugger_loop(stackoffset, message)
 			io.write("Bad command\n")
 		elseif not commands[cmd] then
 			io.write("Unknown command\n")
-		elseif commands[cmd].func(args, stackoffset+1) then
+		elseif commands[cmd].func(args, stackoffset+1, inhook) then
 			break
 		end
 	end
@@ -99,12 +100,13 @@ do
 	commands["next"] = {
 		shortdesc = "Resumes execution for one line, not going into function calls",
 		func = function(argstr, stackoffset)
-			-- If we get a line executed event and our stack count is equal or less than it was,
-			-- break. If it is greater, we are in a called function.
+			-- Get the stack position that the debugged line is in
 			local stackcount = countStack() - stackoffset + 2
 			debug.sethook(function(event, linenum)
-				local thislevel = countStack()
-				if thislevel <= stackcount then
+				-- If we get a line event where the stack size is <= the stack size of the
+				-- debugged line, then we are in the same function (or the function returned).
+				-- Larger stack size means we are in an internal function, or the debugger function.
+				if countStack() <= stackcount then
 					debug.sethook(nil)
 					debugger_loop()
 				end
@@ -113,7 +115,19 @@ do
 		end
 	}
 	commands["n"] = commands["next"]
-
+	
+	commands["step"] = {
+		shortdesc = "Resumes execution for one line, going into function calls",
+		func = function(argstr, stackoffset, inhook)
+			debug.sethook(function(event, linenum)
+				debug.sethook(nil)
+				debugger_loop()
+			end, "l")
+			return true
+		end
+	}
+	commands["s"] = commands["step"]
+	
 	commands["help"] = {
 		shortdesc = "Prints help",
 		func = function(argstr, stackoffset)
@@ -136,10 +150,20 @@ do
 	}
 end
 
---- Pauses the script and enters the debug shell, similar to hitting a breakpoint
+--- Pauses the script on the NEXT line of active code, and enters the debug shell.
 function Debugger.pause()
-	io.write(">>> Debugger.pause()\n")
-	debugger_loop()
+	-- Instead of starting the debugger shell now, set a one-shot hook that starts the debugger code on
+	-- the next line of user code and start the debugger shell in there.
+	-- Because debug hook execution is disabled in the debug hook, the shell is free to set a new hook
+	-- to run in the user code without worrying about the debugger code tripping the hook.
+	debug.sethook(function()
+		-- Skip the first line event, which is the 'end' of this pause function.
+		debug.sethook(function()
+			debug.sethook(nil)
+			io.write(">>> Debugger.pause()\n")
+			debugger_loop()
+		end, "l")
+	end, "l")
 end
 
 --- Sets up the debug hook so that it can catch breakpoints.
