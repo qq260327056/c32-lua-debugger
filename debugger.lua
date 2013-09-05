@@ -247,7 +247,14 @@ Clears a previous set breakpoint.]],
 			if argstr and commands[argstr] then
 				io.write(commands[argstr].longdesc or commands[argstr].shortdesc, "\n")
 			else
-				for cmd, tbl in pairs(commands) do
+				-- Get keys and sort
+				local keys = {}
+				for k,_ in pairs(commands) do keys[#keys+1] = k end
+				table.sort(keys)
+				
+				-- Iterate over sorted keys
+				for _, cmd in ipairs(keys) do
+					local tbl = commands[cmd]
 					io.write(cmd, string.rep(" ", math.max(20-#cmd, 1)), "- ", tbl.shortdesc, "\n")
 				end
 			end
