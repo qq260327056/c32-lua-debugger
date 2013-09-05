@@ -148,6 +148,14 @@ do
 			return true
 		end,
 	}
+	
+	commands["quit"] = {
+		shortdesc = "Terminates the process",
+		longdesc  = "Terminates the process by calling os.exit().",
+		func = function(argstr, stackoffset)
+			os.exit()
+		end,
+	}
 end
 
 --- Pauses the script on the NEXT line of active code, and enters the debug shell.
