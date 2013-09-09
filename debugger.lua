@@ -62,11 +62,15 @@ end
 --- Transforms a path name into a less-ambiguous format.
 -- IE: stripping the '@./' prefix
 local function transform_filename(line)
+	-- Remove @ prefix
 	if line:sub(1,1) == "@" then
 		line = line:sub(2)
 	end
 	
+	-- Transform backslashes to forward slashes
 	line = line:gsub("\\", "/")
+	
+	-- Remove ./ prefix
 	if line:sub(1,2) == "./" then
 		line = line:sub(3)
 	end
@@ -247,6 +251,92 @@ Clears a previous set breakpoint.]],
 	
 	-- ------------------------------------------------------------------------------------------
 	-- Other commands
+	
+	commands["run"] = {
+		shortdesc = "Runs a piece of code",
+		longdesc  = [[Runs a piece of code in the currently examined scope.
+Locals and upvalues are simulated via a function environment.]],
+		func = function(argstr, stackoffset)
+			local func, err = loadstring(argstr, "run")
+			if not func then
+				io.write(err, "\n")
+				return
+			end
+			
+			local debugging_func = debug.getinfo(stackoffset, "f").func
+			
+			local local_names = {}
+			local local_values = {}
+			local upvalue_names = {}
+			local upvalue_values = {}
+			
+			-- Get locals
+			local i = 1
+			while true do
+				local name, val = debug.getlocal(stackoffset, i)
+				if not name then break end
+				if name:sub(1,1) ~= "(" then
+					local_names[name] = i
+					local_values[name] = val
+				end
+				i = i + 1
+			end
+			
+			-- Get upvalues
+			i = 1
+			while true do
+				local name, val = debug.getupvalue(debugging_func, i)
+				if not name then break end
+				if name:sub(1,1) ~= "(" then
+					upvalue_names[name] = i
+					upvalue_values[name] = val
+				end
+				i = i + 1
+			end
+			
+			-- Get executing function environment
+			local env = debug.getfenv(debugging_func)
+			
+			-- Create fake environment table to redirect local/upvalue access
+			local env_mt = {}
+			env_mt.__index = function(self, k)
+				if local_names[k] then
+					return local_values[k]
+				elseif upvalue_names[k] then
+					return upvalue_values[k]
+				else
+					return env[k]
+				end
+			end
+			
+			env_mt.__newindex = function(self, k, v)
+				if local_names[k] then
+					local_values[k] = v
+				elseif upvalue_names[k] then
+					upvalue_values[k] = v
+				else
+					env[k] = v
+				end
+			end
+			
+			-- Set environment and run
+			setfenv(func, setmetatable({}, env_mt))
+			local ok, err = pcall(func)
+			if not ok then
+				io.write(tostring(err), "\n")
+			end
+			
+			-- Set the locals' new values
+			for name, index in pairs(local_names) do
+				debug.setlocal(stackoffset, index, local_values[name])
+			end
+			
+			-- Set the upvalues' new values
+			for name, index in pairs(upvalue_names) do
+				debug.setupvalue(debugging_func, index, upvalue_values[name])
+			end
+		end
+	}
 	
 	commands["help"] = {
 		shortdesc = "Prints help",
