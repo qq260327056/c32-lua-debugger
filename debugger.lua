@@ -141,20 +141,42 @@ do
 	commands["traceback"] = commands["bt"]
 	
 	commands["locals"] = {
-		shortdesc = "Prints local vars",
-		longdesc = "Prints out all local variables in a function. Optionally takes a stack offset.",
+		shortdesc = "Prints local variables",
+		longdesc = [[Usage: locals [stackoffset]
+Prints out all local variables in a function.
+Optionally takes a frame offset.]],
 		func = function(argstr, stackoffset)
 			stackoffset = stackoffset + (tonumber(argstr) or 1) - 1
 			local i = 1
 			while true do
 				local name, val = debug.getlocal(stackoffset, i)
 				if not name then break end
-				io.write(name, string.rep(" ", math.max(20-#name, 1)), "= ", tostring(val), "\n")
+				if name:sub(1,1) ~= "(" then
+					io.write(name, string.rep(" ", math.max(20-#name, 1)), "= ", tostring(val), "\n")
+				end
 				i = i + 1
 			end
 		end,
 	}
 	commands["vars"] = commands["locals"]
+	
+	commands["upvalues"] = {
+		shortdesc = "Prints upvalues",
+		longdesc  = [[Usage: upvalues [stackoffset]
+Prints out all upvalues in a function.
+Optionally takes a frame offset.]],
+		func = function(argstr, stackoffset)
+			stackoffset = stackoffset + (tonumber(argstr) or 1) - 1
+			local func = debug.getinfo(stackoffset, "f").func
+			local i = 1
+			while true do
+				local name, val = debug.getupvalue(func, i)
+				if not name then break end
+				io.write(name, string.rep(" ", math.max(20-#name, 1)), "= ", tostring(val), "\n")
+				i = i + 1
+			end
+		end
+	}
 	
 	-- ------------------------------------------------------------------------------------------
 	-- Traversal
