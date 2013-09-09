@@ -33,6 +33,7 @@ do
 	local hasjit, ajit = pcall(require, "jit")
 	if hasjit then
 		jit = ajit
+		-- Turn off JIT to ensure the debug hook runs
 		jit.off()
 	end
 end
@@ -43,7 +44,7 @@ local commands = {}
 local breakpoints = {}
 
 local debugger_loop
-local breakpoints_hook
+local default_hook
 
 -- ------------------------------------------------------------------------------------------
 -- Helper functions
@@ -75,12 +76,14 @@ end
 
 --- Checks if a currently executing line has a breakpoint on it.
 local function check_breakpoints(stackoffset)
+	if not next(breakpoints) then return false end -- Don't bother if no breakpoints
+	
 	stackoffset = stackoffset or 2
 	local info = debug.getinfo(stackoffset+1, "Sl")
 	assert(info, "Invalid stackoffset passed to stackoffset")
 	local source, curline = transform_filename(info.source), info.currentline
 	if breakpoints[source] and breakpoints[source][curline] then
-		debug.sethook(breakpoints_hook, "l")
+		debug.sethook(default_hook, "l")
 		io.write(">>> Breakpoint hit\n")
 		debugger_loop(4)
 		return true
@@ -88,8 +91,8 @@ local function check_breakpoints(stackoffset)
 	return false
 end
 
---- Debug hook that only scans for breakpoints
-breakpoints_hook = function(event, linenum)
+--- The default debugger hook
+default_hook = function(event, linenum)
 	check_breakpoints()
 end
 
@@ -164,7 +167,7 @@ do
 				-- debugged line, then we are in the same function (or the function returned).
 				-- Larger stack size means we are in an internal function, or the debugger function.
 				if count_stack() <= stackcount then
-					debug.sethook(breakpoints_hook, "l")
+					debug.sethook(default_hook, "l")
 					debugger_loop()
 				end
 			end, "l")
@@ -179,7 +182,7 @@ do
 			debug.sethook(function(event, linenum)
 				if check_breakpoints() then return end
 				
-				debug.sethook(breakpoints_hook, "l")
+				debug.sethook(default_hook, "l")
 				debugger_loop()
 			end, "l")
 			return true
@@ -233,6 +236,10 @@ Clears a previous set breakpoint.]],
 			end
 			
 			breakpoints[file][line] = nil
+			if not next(breakpoints[file]) then
+				breakpoints[file] = nil
+			end
+			
 			io.write("Breakpoint on ", file, ":", tonumber(line), " cleared\n")
 		end
 	}
@@ -290,12 +297,12 @@ function Debugger.pause()
 	debug.sethook(function()
 		-- Skip the first line event, which is the 'end' of this pause function.
 		debug.sethook(function()
-			debug.sethook(breakpoints_hook, "l")
+			debug.sethook(default_hook, "l")
 			io.write(">>> Debugger.pause()\n")
 			debugger_loop()
 		end, "l")
 	end, "l")
 end
 
-debug.sethook(breakpoints_hook, "l")
+debug.sethook(default_hook, "l")
 return Debugger
