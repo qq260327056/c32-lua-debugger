@@ -109,17 +109,21 @@ do
 	if ok then
 		-- Use LuaJIT's profile.dumpstack function, which is faster than debug.getinfo
 		local dumpstack = profile.dumpstack
+		local match = string.match
+		local tonumber = tonumber
 		
 		get_current_pos = function(stackoffset)
 			local stack = dumpstack("pl:", -stackoffset-2)
-			local file, line = string.match(stack, "^[^:]*:[%d]:")
+			local file, line = match(stack, "^[^:]*:[%d]:")
 			return file, line and tonumber(line)
 		end
 	else
 		-- LuaJIT's profiler is unavailable. Use debug.getinfo
+		local getinfo = debug.getinfo
+		local assert = assert
 		
 		get_current_pos = function(stackoffset)
-			local info = debug.getinfo(stackoffset+1, "Sl")
+			local info = getinfo(stackoffset+1, "Sl")
 			assert(info, "Invalid stackoffset")
 			return transform_filename(info.source), info.currentline
 		end
