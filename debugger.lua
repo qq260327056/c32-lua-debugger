@@ -41,7 +41,7 @@ end
 -- Forward declare some tables and functions.
 local Debugger = {}
 local commands = {}
-local breakpoints = {}
+local breakpoints
 
 local debugger_loop
 local default_hook
@@ -78,31 +78,10 @@ local function transform_filename(line)
 	return line
 end
 
---- Checks if a currently executing line has a breakpoint on it.
-local function check_breakpoints(stackoffset)
-	if not next(breakpoints) then return false end -- Don't bother if no breakpoints
-	
-	stackoffset = stackoffset or 2
-	local info = debug.getinfo(stackoffset+1, "Sl")
-	assert(info, "Invalid stackoffset passed to stackoffset")
-	local source, curline = transform_filename(info.source), info.currentline
-	if breakpoints[source] and breakpoints[source][curline] then
-		debug.sethook(default_hook, "l")
-		io.write(">>> Breakpoint hit\n")
-		debugger_loop(4)
-		return true
-	end
-	return false
-end
-
---- The default debugger hook
-default_hook = function(event, linenum)
-	check_breakpoints()
-end
-
 --- The debugger shell. Must be ran in a debug hook
-debugger_loop = function(stackoffset, inhook)
+debugger_loop = function(stackoffset)
 	stackoffset = stackoffset or 3
+	debug.sethook(default_hook, "l")
 	while true do
 		-- Get and print the line of code we are on
 		local info = debug.getinfo(stackoffset, "nSlu")
@@ -116,10 +95,95 @@ debugger_loop = function(stackoffset, inhook)
 			io.write("Bad command\n")
 		elseif not commands[cmd] then
 			io.write("Unknown command\n")
-		elseif commands[cmd].func(args, stackoffset+1, inhook) then
+		elseif commands[cmd].func(args, stackoffset+1) then
 			break
 		end
 	end
+end
+
+--- Returns the current position of the debugged code.
+local get_current_pos
+do
+	-- Is LuaJIT's profiler available
+	local ok, profile = pcall(require, "jit.profile")
+	if ok then
+		-- Use LuaJIT's profile.dumpstack function, which is faster than debug.getinfo
+		local dumpstack = profile.dumpstack
+		
+		get_current_pos = function(stackoffset)
+			local stack = dumpstack("pl:", -stackoffset-2)
+			local file, line = string.match(stack, "^[^:]*:[%d]:")
+			return file, line and tonumber(line)
+		end
+	else
+		-- LuaJIT's profiler is unavailable. Use debug.getinfo
+		
+		get_current_pos = function(stackoffset)
+			local info = debug.getinfo(stackoffset+1, "Sl")
+			assert(info, "Invalid stackoffset")
+			return transform_filename(info.source), info.currentline
+		end
+		
+	end
+end
+
+-- ------------------------------------------------------------------------------------------
+-- Breakpoints
+
+--- Adds a breakpoint
+local function breakpoint_add(file, line)
+	file = transform_filename(file)
+	
+	if not breakpoints then breakpoints = {} end
+	if not breakpoints[file] then breakpoints[file] = {} end
+	breakpoints[file][line] = true
+end
+
+--- Removes a breakpoint. Returns true on success, or false if there was no breakpoint there
+local function breakpoint_remove(file, line)
+	file = transform_filename(file)
+	
+	-- Is there a breakpoint there?
+	if not breakpoints then return false end
+	if not breakpoints[file] then return false end
+	if not breakpoints[file][line] then return false end
+	
+	-- Delete the breakpoint
+	breakpoints[file][line] = nil
+	
+	-- Last breakpoint in the file?
+	if not next(breakpoints[file]) then
+		-- Remove file from breakpoints list.
+		breakpoints[file] = nil
+		
+		-- Last breakpoint?
+		if not next(breakpoints) then
+			-- Remove breakpoints list.
+			breakpoints = nil
+		end
+	end
+	
+	return true
+end
+
+--- Checks if a currently executing line has a breakpoint on it.
+local function breakpoint_check(stackoffset)
+	if not breakpoints then return false end -- Don't bother if no breakpoints
+	
+	stackoffset = stackoffset or 2
+	local source, curline = get_current_pos(stackoffset+1)
+	if breakpoints[source] and breakpoints[source][curline] then
+		io.write(">>> Breakpoint hit\n")
+		debugger_loop(4)
+		return true
+	end
+	return false
+end
+
+
+--- The default debugger hook
+default_hook = function(event, linenum)
+	breakpoint_check()
 end
 
 -- ------------------------------------------------------------------------------------------
@@ -187,7 +251,7 @@ Optionally takes a frame offset.]],
 			-- Get the stack position that the debugged line is in
 			local stackcount = count_stack() - stackoffset + 2
 			debug.sethook(function(event, linenum)
-				if check_breakpoints() then return end
+				if breakpoint_check() then return end
 				
 				-- If we get a line event where the stack size is <= the stack size of the
 				-- debugged line, then we are in the same function (or the function returned).
@@ -204,9 +268,9 @@ Optionally takes a frame offset.]],
 	
 	commands["step"] = {
 		shortdesc = "Resumes execution for one line, going into function calls",
-		func = function(argstr, stackoffset, inhook)
+		func = function(argstr, stackoffset)
 			debug.sethook(function(event, linenum)
-				if check_breakpoints() then return end
+				if breakpoint_check() then return end
 				
 				debug.sethook(default_hook, "l")
 				debugger_loop()
@@ -226,18 +290,14 @@ Sets a breakpoint.
 The line number must be an active line (a line with code on it) or else the breakpoint will never trigger.]],
 		func = function(argstr, stackoffset)
 			local file, line = argstr:match("^([^:]+):(%d+)$")
-			if not file then
+			if not file or not tonumber(line) then
 				io.write("Syntax: b(reak) <file>:<linenum>\n")
 				return
 			end
 			line = tonumber(line)
-			file = transform_filename(file)
 			
-			if not breakpoints[file] then
-				breakpoints[file] = {}
-			end
+			breakpoint_add(file, line)
 			
-			breakpoints[file][line] = true
 			io.write("Breakpoint set on ", file, ":", tostring(line), "\n")
 		end
 	}
@@ -249,21 +309,15 @@ The line number must be an active line (a line with code on it) or else the brea
 Clears a previous set breakpoint.]],
 		func = function(argstr, stackoffset)
 			local file, line = argstr:match("^([^:]+):(%d+)$")
-			if not file then
+			if not file or not tonumber(line) then
 				io.write("Syntax: cl(ear) <file>:<linenum>\n")
 				return
 			end
 			line = tonumber(line)
-			file = transform_filename(file)
 			
-			if not breakpoints[file] or not breakpoints[file][line] then
+			if not breakpoint_remove(file, line) then
 				io.write("No breakpoint set on ", file, ":", tonumber(line), "\n")
 				return
-			end
-			
-			breakpoints[file][line] = nil
-			if not next(breakpoints[file]) then
-				breakpoints[file] = nil
 			end
 			
 			io.write("Breakpoint on ", file, ":", tonumber(line), " cleared\n")
@@ -414,6 +468,13 @@ function Debugger.pause()
 			debugger_loop()
 		end, "l")
 	end, "l")
+end
+
+--- Sets a breakpoint
+function Debugger.breakpoint(file, line)
+	assert(type(file) == "string", "file must be a string")
+	line = assert(tonumber(line), "line must be a number")
+	breakpoint_add(file, line)
 end
 
 debug.sethook(default_hook, "l")
